@@ -1,7 +1,6 @@
 import fs from 'fs';
 import colors from 'kleur';
 import path from 'path';
-import sirv from 'sirv';
 import { URL } from 'url';
 import { getRequest, setResponse } from '../../../exports/node/index.js';
 import { installPolyfills } from '../../../exports/node/polyfills.js';
@@ -230,44 +229,6 @@ export async function dev(vite, vite_config, svelte_config) {
 	});
 
 	const assets = svelte_config.kit.paths.assets ? SVELTE_KIT_ASSETS : svelte_config.kit.paths.base;
-	const asset_server = sirv(svelte_config.kit.files.assets, {
-		dev: true,
-		etag: true,
-		maxAge: 0,
-		extensions: [],
-		setHeaders: (res) => {
-			res.setHeader('access-control-allow-origin', '*');
-		}
-	});
-
-	vite.middlewares.use(async (req, res, next) => {
-		try {
-			const base = `${vite.config.server.https ? 'https' : 'http'}://${
-				req.headers[':authority'] || req.headers.host
-			}`;
-
-			const decoded = decodeURI(new URL(base + req.url).pathname);
-
-			if (decoded.startsWith(assets)) {
-				const pathname = decoded.slice(assets.length);
-				const file = svelte_config.kit.files.assets + pathname;
-
-				if (fs.existsSync(file) && !fs.statSync(file).isDirectory()) {
-					if (has_correct_case(file, svelte_config.kit.files.assets)) {
-						req.url = encodeURI(pathname); // don't need query/hash
-						asset_server(req, res);
-						return;
-					}
-				}
-			}
-
-			next();
-		} catch (e) {
-			const error = coalesce_to_error(e);
-			res.statusCode = 500;
-			res.end(fix_stack_trace(error));
-		}
-	});
 
 	// set `import { version } from '$app/environment'`
 	(await vite.ssrLoadModule(`${runtime_prefix}/env.js`)).set_version(
@@ -301,13 +262,6 @@ export async function dev(vite, vite_config, svelte_config) {
 					// @ts-expect-error
 					serve_static_middleware.handle(req, res);
 					return;
-				}
-
-				if (!decoded.startsWith(svelte_config.kit.paths.base)) {
-					return not_found(
-						res,
-						`Not found (did you mean ${svelte_config.kit.paths.base + req.url}?)`
-					);
 				}
 
 				if (decoded === svelte_config.kit.paths.base + '/service-worker.js') {
@@ -506,21 +460,11 @@ export async function dev(vite, vite_config, svelte_config) {
 	};
 }
 
-/** @param {import('http').ServerResponse} res */
-function not_found(res, message = 'Not found') {
-	res.statusCode = 404;
-	res.end(message);
-}
-
 /**
  * @param {import('connect').Server} server
  */
 function remove_static_middlewares(server) {
-	// We don't use viteServePublicMiddleware because of the following issues:
-	// https://github.com/vitejs/vite/issues/9260
-	// https://github.com/vitejs/vite/issues/9236
-	// https://github.com/vitejs/vite/issues/9234
-	const static_middlewares = ['viteServePublicMiddleware', 'viteServeStaticMiddleware'];
+	const static_middlewares = ['viteServeStaticMiddleware'];
 	for (let i = server.stack.length - 1; i > 0; i--) {
 		// @ts-expect-error using internals
 		if (static_middlewares.includes(server.stack[i].handle.name)) {
@@ -570,25 +514,4 @@ async function find_deps(vite, node, deps) {
 	}
 
 	await Promise.all(branches);
-}
-
-/**
- * Determine if a file is being requested with the correct case,
- * to ensure consistent behaviour between dev and prod and across
- * operating systems. Note that we can't use realpath here,
- * because we don't want to follow symlinks
- * @param {string} file
- * @param {string} assets
- * @returns {boolean}
- */
-function has_correct_case(file, assets) {
-	if (file === assets) return true;
-
-	const parent = path.dirname(file);
-
-	if (fs.readdirSync(parent).includes(path.basename(file))) {
-		return has_correct_case(parent, assets);
-	}
-
-	return false;
 }
